@@ -1,232 +1,168 @@
 // ignore
-// @name:javxx 视频源
-// @webSite:https://javxx.com
-// @version:1
-// @remark:JavXX 视频源扩展
-// @isAV:1
-// @deprecated:0
+//@name:javxx 视频源
+//@version:1
+//@webSite:https://javxx.com
+//@remark:JavXX 视频源扩展（支持搜索与分页）
+//@type:100
+//@instance:javxx20250605
+//@isAV:1
 // ignore
 
-// 定义全局配置
-const appConfig = {
-    _webSite: 'https://javxx.com',
-    get webSite() { return this._webSite; },
-    set webSite(value) { this._webSite = value; },
-    _uzTag: '',
-    get uzTag() { return this._uzTag; },
-    set uzTag(value) { this._uzTag = value; }
-};
-
-// 辅助函数：发送HTTP请求
-async function req(url) {
-    try {
-        const response = await fetch(url);
-        const data = await response.text();
-        return { error: false, data: data };
-    } catch (error) {
-        return { error: true, msg: error.message };
+class javxxClass extends WebApiBase {
+    constructor() {
+        super();
+        this.webSite = 'https://javxx.com';
+        this.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+        };
     }
-}
 
-// 获取视频列表（分类/搜索共用）
-async function fetchVideoList(url, page) {
-    let backData = new RepVideoList();
-    // 假设分类列表和搜索结果列表使用相同的页面结构
-    let fullUrl = `${appConfig.webSite}${url}`;
-    // 分页判断: 如果请求的URL中没有包含问号，表示它可能还不包含查询参数，就用 ?page= 拼接；
-    // 否则（例如搜索URL已有?keyword=xxx），用 &page= 拼接。
-    if (fullUrl.indexOf('?') === -1) {
-        fullUrl += `?page=${page}`;
-    } else {
-        fullUrl += `&page=${page}`;
+    /**
+     * 获取分类列表（该站点分类较少，直接返回内置分类）
+     */
+    async getClassList(args) {
+        let backData = new RepVideoClassList();
+        backData.data = [
+            { type_id: '/cn/hot', type_name: '热门推荐', hasSubclass: false },
+            { type_id: '/cn', type_name: '最新发布', hasSubclass: false },
+            { type_id: '/cn/search', type_name: '搜索', hasSubclass: false }  // 占位，实际搜索用 searchVideo
+        ];
+        return JSON.stringify(backData);
     }
-    
-    try {
-        const pro = await req(fullUrl);
-        if (pro.error) {
-            backData.error = pro.msg;
-            return JSON.stringify(backData);
+
+    /**
+     * 获取分类下的视频列表（支持分页）
+     */
+    async getVideoList(args) {
+        let url = args.url;
+        let page = args.page || 1;
+        // 构建完整请求地址（分页参数为 ?page=N）
+        let fullUrl = this.webSite + url + (url.includes('?') ? `&page=${page}` : `?page=${page}`);
+        return await this._fetchVideoList(fullUrl);
+    }
+
+    /**
+     * 搜索视频（使用 /cn/search?keyword=xxx&page=N）
+     */
+    async searchVideo(args) {
+        let keyword = encodeURIComponent(args.searchWord);
+        let page = args.page || 1;
+        let searchUrl = `${this.webSite}/cn/search?keyword=${keyword}&page=${page}`;
+        return await this._fetchVideoList(searchUrl);
+    }
+
+    /**
+     * 公共方法：解析视频列表页（分类/搜索共用）
+     */
+    async _fetchVideoList(fullUrl) {
+        let backData = new RepVideoList();
+        try {
+            let pro = await req(fullUrl, { headers: this.headers });
+            if (pro.error) {
+                backData.error = pro.error;
+                return JSON.stringify(backData);
+            }
+            const $ = cheerio.load(pro.data);
+            let videos = [];
+            $('.item').each((_, elem) => {
+                let videoDet = new VideoDetail();
+                let linkElem = $(elem).find('.title');
+                let href = linkElem.attr('href') || $(elem).find('.poster').attr('href');
+                if (href && href.startsWith('/')) {
+                    videoDet.vod_id = href;               // 相对路径，如 /cn/v/fc2-ppv-4907899
+                } else {
+                    videoDet.vod_id = href;
+                }
+                let code = $(elem).find('.code').text().trim();
+                let titleSpan = $(elem).find('.title span:not(.code)').text().trim();
+                videoDet.vod_name = code + ' ' + titleSpan;
+                videoDet.vod_pic = $(elem).find('.image img').attr('src');
+                videoDet.vod_remarks = $(elem).find('.duration').text().trim();
+                videos.push(videoDet);
+            });
+            backData.data = videos;
+        } catch (err) {
+            backData.error = err.message;
         }
-        
-        const $ = cheerio.load(pro.data);
-        let videos = [];
-        
-        // 根据提供的HTML结构解析视频列表
-        $('.item').each((_, elem) => {
-            const videoDet = new VideoDetail();
-            const linkElem = $(elem).find('.title');
-            const posterElem = $(elem).find('.poster');
-            const imgElem = $(elem).find('.image img');
-            
-            // 设置视频ID和URL（从a标签的href中提取相对路径）
-            let href = linkElem.attr('href') || posterElem.attr('href');
-            if (href && href.startsWith('/')) {
-                videoDet.vod_id = href;
+        return JSON.stringify(backData);
+    }
+
+    /**
+     * 获取视频详情（无分集，单视频）
+     */
+    async getVideoDetail(args) {
+        let backData = new RepVideoDetail();
+        let fullUrl = this.webSite + args.url;
+        try {
+            let pro = await req(fullUrl, { headers: this.headers });
+            if (pro.error) {
+                backData.error = pro.error;
+                return JSON.stringify(backData);
+            }
+            const $ = cheerio.load(pro.data);
+            let vodDetail = new VideoDetail();
+            vodDetail.vod_id = args.url;
+            vodDetail.vod_name = $('h1').text().trim() || $('.video-title').text().trim() || '未知标题';
+            vodDetail.vod_pic = $('.poster img').attr('src') || '';
+            vodDetail.vod_content = $('.info .description, .video-description, .intro').text().trim() || '';
+            // 无分集，直接将详情页URL作为播放参数传递给 getVideoPlayUrl
+            vodDetail.vod_play_url = `播放$${fullUrl}`;
+            backData.data = vodDetail;
+        } catch (err) {
+            backData.error = err.message;
+        }
+        return JSON.stringify(backData);
+    }
+
+    /**
+     * 获取视频真实播放地址（从详情页提取 .m3u8 链接）
+     */
+    async getVideoPlayUrl(args) {
+        let backData = new RepVideoPlayUrl();
+        let pageUrl = args.url;   // 这里传入的是详情页完整URL（因为 vod_play_url 存的是 fullUrl）
+        try {
+            let pro = await req(pageUrl, { headers: this.headers });
+            if (pro.error) {
+                backData.error = pro.error;
+                return JSON.stringify(backData);
+            }
+            let html = pro.data;
+            // 尝试从页面中提取 .m3u8 地址（支持常见 pattern）
+            let m3u8Match = html.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
+            if (m3u8Match && m3u8Match[0]) {
+                backData.data = m3u8Match[0];
             } else {
-                videoDet.vod_id = href;
+                // 如果正则失败，尝试从 video 标签或 source 标签获取
+                const $ = cheerio.load(html);
+                let videoSrc = $('video').attr('src');
+                if (videoSrc && videoSrc.startsWith('http')) {
+                    backData.data = videoSrc;
+                } else {
+                    let sourceSrc = $('source').attr('src');
+                    if (sourceSrc && sourceSrc.startsWith('http')) {
+                        backData.data = sourceSrc;
+                    } else {
+                        backData.error = '未找到可用的视频播放地址';
+                    }
+                }
             }
-            
-            // 设置视频标题（code + 描述）
-            const code = $(elem).find('.code').text().trim();
-            const titleSpan = $(elem).find('.title span:not(.code)').text().trim();
-            videoDet.vod_name = code + ' ' + titleSpan;
-            
-            // 设置封面图片
-            videoDet.vod_pic = imgElem.attr('src');
-            
-            // 设置时长
-            videoDet.vod_remarks = $(elem).find('.duration').text().trim();
-            
-            videos.push(videoDet);
-        });
-        
-        backData.data = videos;
-    } catch (error) {
-        backData.error = error.message;
+        } catch (err) {
+            backData.error = err.message;
+        }
+        return JSON.stringify(backData);
     }
-    
-    return JSON.stringify(backData);
-}
 
-// 获取视频详情（视频站是详情页即播放页，无分集）
-async function getVideoDetail(args) {
-    let backData = new RepVideoDetail();
-    let fullUrl = `${appConfig.webSite}${args.url}`;
-    
-    try {
-        const pro = await req(fullUrl);
-        if (pro.error) {
-            backData.error = pro.msg;
-            return JSON.stringify(backData);
-        }
-        
-        const $ = cheerio.load(pro.data);
-        let vodDetail = new VideoDetail();
-        
-        vodDetail.vod_id = args.url;
-        // 提取标题
-        vodDetail.vod_name = $('h1').text().trim() || $('.video-title').text().trim() || '未知标题';
-        // 提取封面图
-        vodDetail.vod_pic = $('.poster img').attr('src') || '';
-        // 提取简介/描述
-        vodDetail.vod_content = $('.info .description, .video-description, .intro').text().trim() || '';
-        
-        // 因为是单集视频，直接创建一个剧集项
-        let episode = new Episode();
-        episode.episode_id = args.url;
-        episode.episode_name = '播放';
-        episode.episode_url = args.url;
-        vodDetail.vod_episodes = [episode];
-        vodDetail.vod_episode_total = 1;
-        
-        backData.data = vodDetail;
-    } catch (error) {
-        backData.error = error.message;
+    /**
+     * 以下方法本扩展不需要，但必须实现（返回空数据）
+     */
+    async getSubclassList(args) {
+        return JSON.stringify(new RepVideoSubclassList());
     }
-    
-    return JSON.stringify(backData);
-}
-
-// 获取视频播放地址
-async function getVideoPlayUrl(args) {
-    let backData = new RepVideoPlayUrl();
-    let fullUrl = `${appConfig.webSite}${args.url}`;
-    
-    try {
-        // 方法1：直接返回从Network面板捕获的m3u8地址
-        // 注意：实际使用时，URL中的token等参数可能会过期，需要动态从页面提取
-        
-        // 方法2：从页面中解析真实的播放地址
-        const pro = await req(fullUrl);
-        if (pro.error) {
-            backData.error = pro.msg;
-            return JSON.stringify(backData);
-        }
-        
-        const $ = cheerio.load(pro.data);
-        let playUrl = '';
-        
-        // 尝试从多个可能的元素中提取视频地址
-        // 1. 检查video标签的src属性
-        const videoSrc = $('video').attr('src');
-        if (videoSrc && videoSrc.startsWith('http')) {
-            playUrl = videoSrc;
-        }
-        
-        // 2. 检查source标签
-        if (!playUrl) {
-            const sourceSrc = $('source').attr('src');
-            if (sourceSrc && sourceSrc.startsWith('http')) {
-                playUrl = sourceSrc;
-            }
-        }
-        
-        // 3. 查找可能包含m3u8链接的script变量
-        if (!playUrl) {
-            const pageContent = pro.data;
-            const m3u8Match = pageContent.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
-            if (m3u8Match) {
-                playUrl = m3u8Match[0];
-            }
-        }
-        
-        // 4. 如果以上方法都失败，使用备用的API猜测地址（仅供参考，实际无法保证有效）
-        if (!playUrl) {
-            playUrl = `https://f08a6b76.bright-light-107.store/blah4/${Date.now()}/video.m3u8`;
-        }
-        
-        backData.url = playUrl;
-    } catch (error) {
-        backData.error = error.message;
+    async getSubclassVideoList(args) {
+        return JSON.stringify(new RepVideoList());
     }
-    
-    return JSON.stringify(backData);
 }
 
-// 获取分类列表（站点没有明确分类，返回默认分类）
-async function getClassList(args) {
-    let backData = new RepVideoClassList();
-    backData.data = [
-        { type_id: 'hot', type_name: '热门推荐', hasSubclass: false },
-        { type_id: 'new', type_name: '最新发布', hasSubclass: false },
-        { type_id: 'cn', type_name: '中文分类', hasSubclass: false }
-    ];
-    return JSON.stringify(backData);
-}
-
-// 获取分类下的视频列表
-async function getVideoList(args) {
-    let url = '';
-    switch (args.url) {
-        case 'hot':
-            url = '/cn/hot';
-            break;
-        case 'new':
-            url = '/cn/new';
-            break;
-        case 'cn':
-            url = '/cn';
-            break;
-        default:
-            url = '/cn/hot';
-    }
-    return await fetchVideoList(url, args.page);
-}
-
-// 搜索视频
-async function searchVideo(args) {
-    const searchPath = `/cn/search?keyword=${encodeURIComponent(args.keyword)}`;
-    return await fetchVideoList(searchPath, args.page);
-}
-
-// 获取二级分类（此站点无二级分类）
-async function getSubclassList(args) {
-    let backData = new RepVideoSubclassList();
-    return JSON.stringify(backData);
-}
-
-// 获取二级分类视频列表
-async function getSubclassVideoList(args) {
-    let backData = new RepVideoList();
-    return JSON.stringify(backData);
-}
+// 实例化，名称需与 @instance 一致
+var javxx20250605 = new javxxClass();
